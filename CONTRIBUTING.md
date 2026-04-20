@@ -17,6 +17,9 @@ go test -race ./relay/... ./middleware/... ./mockrelay/...
 # Full suite including examples
 go test -race ./...
 
+# OTel sub-module
+cd relayotel && go test -race ./...
+
 # Coverage
 go test -race -coverprofile=coverage.out ./relay/... ./middleware/... ./mockrelay/...
 go tool cover -html=coverage.out
@@ -29,11 +32,14 @@ go tool cover -html=coverage.out
 - All exported symbols must have godoc comments
 - Tests must pass with `-race`
 - New pipeline behaviors go in `middleware/` and must implement `relay.PipelineBehavior`
+- OTel-dependent code goes in `relayotel/` (separate sub-module)
+- Middleware must accept `relay.Logger`, not `*slog.Logger` directly
 
 ## Pull Request Checklist
 
 - [ ] Tests added or updated
 - [ ] `go test -race ./...` passes
+- [ ] `cd relayotel && go test -race ./...` passes
 - [ ] `go vet ./...` passes
 - [ ] Godoc on all exported symbols
 - [ ] `CHANGELOG.md` updated under `## Unreleased`

@@ -3,6 +3,7 @@ package relay_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -710,4 +711,184 @@ func TestConcurrentPublish_NoRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// Factory registration
+// ---------------------------------------------------------------------------
+
+type factoryCmdHandler struct {
+	instanceID int
+}
+
+var factoryCallCount int
+var factoryMu sync.Mutex
+
+func (h *factoryCmdHandler) Handle(_ context.Context, cmd createCmd) (cmdResult, error) {
+	return cmdResult{ID: fmt.Sprintf("case-%s-%d", cmd.OrgID, h.instanceID)}, nil
+}
+
+func TestRegisterCommandFactory_CreatesNewHandlerPerRequest(t *testing.T) {
+	r := relay.New()
+	factoryMu.Lock()
+	factoryCallCount = 0
+	factoryMu.Unlock()
+
+	relay.RegisterCommandFactory(r, func() relay.CommandHandler[createCmd, cmdResult] {
+		factoryMu.Lock()
+		factoryCallCount++
+		id := factoryCallCount
+		factoryMu.Unlock()
+		return &factoryCmdHandler{instanceID: id}
+	})
+
+	res1, err := relay.Dispatch[cmdResult](context.Background(), r, createCmd{OrgID: "org-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res1.ID != "case-org-1-1" {
+		t.Errorf("want case-org-1-1, got %s", res1.ID)
+	}
+
+	res2, err := relay.Dispatch[cmdResult](context.Background(), r, createCmd{OrgID: "org-2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res2.ID != "case-org-2-2" {
+		t.Errorf("want case-org-2-2, got %s", res2.ID)
+	}
+
+	factoryMu.Lock()
+	count := factoryCallCount
+	factoryMu.Unlock()
+	if count != 2 {
+		t.Errorf("factory should have been called 2 times, got %d", count)
+	}
+}
+
+func TestRegisterCommandFactory_PanicsOnDuplicate(t *testing.T) {
+	r := relay.New()
+	relay.RegisterCommandFactory(r, func() relay.CommandHandler[createCmd, cmdResult] {
+		return &createHandler{}
+	})
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic for duplicate factory registration")
+		}
+	}()
+	relay.RegisterCommandFactory(r, func() relay.CommandHandler[createCmd, cmdResult] {
+		return &createHandler{}
+	})
+}
+
+func TestRegisterCommandFactory_ConflictsWithRegisterCommand(t *testing.T) {
+	r := relay.New()
+	relay.RegisterCommand(r, &createHandler{})
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic: factory and instance registration conflict")
+		}
+	}()
+	relay.RegisterCommandFactory(r, func() relay.CommandHandler[createCmd, cmdResult] {
+		return &createHandler{}
+	})
+}
+
+type factoryQueryHandler struct{ instanceID int }
+
+func (h *factoryQueryHandler) Handle(_ context.Context, q dashQuery) (queryResult, error) {
+	return queryResult{OrgID: fmt.Sprintf("%s-%d", q.OrgID, h.instanceID)}, nil
+}
+
+func TestRegisterQueryFactory_CreatesNewHandlerPerRequest(t *testing.T) {
+	r := relay.New()
+	var count int
+	relay.RegisterQueryFactory(r, func() relay.QueryHandler[dashQuery, queryResult] {
+		count++
+		return &factoryQueryHandler{instanceID: count}
+	})
+
+	res1, err := relay.Ask[queryResult](context.Background(), r, dashQuery{OrgID: "org"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.OrgID != "org-1" {
+		t.Errorf("want org-1, got %s", res1.OrgID)
+	}
+
+	res2, err := relay.Ask[queryResult](context.Background(), r, dashQuery{OrgID: "org"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.OrgID != "org-2" {
+		t.Errorf("want org-2, got %s", res2.OrgID)
+	}
+}
+
+type factoryNotifHandler struct {
+	mu     sync.Mutex
+	called bool
+}
+
+func (h *factoryNotifHandler) Handle(_ context.Context, _ caseEvent) error {
+	h.mu.Lock()
+	h.called = true
+	h.mu.Unlock()
+	return nil
+}
+
+func TestRegisterNotificationHandlerFactory_CreatesNewHandlerPerPublish(t *testing.T) {
+	r := relay.New()
+	var instances []*factoryNotifHandler
+	var mu sync.Mutex
+
+	relay.RegisterNotificationHandlerFactory(r, func() relay.NotificationHandler[caseEvent] {
+		h := &factoryNotifHandler{}
+		mu.Lock()
+		instances = append(instances, h)
+		mu.Unlock()
+		return h
+	})
+
+	_ = relay.Publish(context.Background(), r, caseEvent{CaseID: "c-1"})
+	_ = relay.Publish(context.Background(), r, caseEvent{CaseID: "c-2"})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 handler instances, got %d", len(instances))
+	}
+	for i, h := range instances {
+		h.mu.Lock()
+		called := h.called
+		h.mu.Unlock()
+		if !called {
+			t.Errorf("handler instance %d was not called", i)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RequestKind
+// ---------------------------------------------------------------------------
+
+func TestRequestKind(t *testing.T) {
+	tests := []struct {
+		name string
+		req  any
+		want string
+	}{
+		{"command", createCmd{}, "command"},
+		{"query", dashQuery{}, "query"},
+		{"notification", caseEvent{}, "notification"},
+		{"unknown", "not a relay type", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := relay.RequestKind(tt.req)
+			if got != tt.want {
+				t.Errorf("RequestKind(%T) = %q, want %q", tt.req, got, tt.want)
+			}
+		})
+	}
 }

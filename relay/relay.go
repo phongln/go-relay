@@ -153,6 +153,71 @@ func RegisterNotificationHandler[N Notification](r *RealRelay, h NotificationHan
 }
 
 // ---------------------------------------------------------------------------
+// Factory registration — new handler instance per request
+// ---------------------------------------------------------------------------
+
+// RegisterCommandFactory registers a factory that creates a new [CommandHandler]
+// for each dispatch. Use this when your handler has per-request state or scoped
+// dependencies (e.g., a unit-of-work that must not be shared across requests).
+//
+//	relay.RegisterCommandFactory(r, func() relay.CommandHandler[CreateCaseCmd, CaseResource] {
+//	    return &CreateCaseHandler{Repo: repo.NewScoped()}
+//	})
+//
+// For stateless handlers (the common case), prefer [RegisterCommand] instead.
+func RegisterCommandFactory[C Command, R any](r *RealRelay, factory func() CommandHandler[C, R]) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var zero C
+	t := reflect.TypeOf(zero)
+	if _, exists := r.commands[t]; exists {
+		panic(fmt.Sprintf("go-relay: duplicate command handler registered for %T", zero))
+	}
+	r.commands[t] = func(ctx context.Context, raw any) (any, error) {
+		return factory().Handle(ctx, raw.(C))
+	}
+}
+
+// RegisterQueryFactory registers a factory that creates a new [QueryHandler]
+// for each ask. Use this when your handler has per-request state or scoped
+// dependencies.
+//
+//	relay.RegisterQueryFactory(r, func() relay.QueryHandler[GetCaseQuery, CaseResource] {
+//	    return &GetCaseHandler{ReadRepo: readRepo.NewScoped()}
+//	})
+//
+// For stateless handlers (the common case), prefer [RegisterQuery] instead.
+func RegisterQueryFactory[Q Query, R any](r *RealRelay, factory func() QueryHandler[Q, R]) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var zero Q
+	t := reflect.TypeOf(zero)
+	if _, exists := r.queries[t]; exists {
+		panic(fmt.Sprintf("go-relay: duplicate query handler registered for %T", zero))
+	}
+	r.queries[t] = func(ctx context.Context, raw any) (any, error) {
+		return factory().Handle(ctx, raw.(Q))
+	}
+}
+
+// RegisterNotificationHandlerFactory adds a factory that creates a new
+// [NotificationHandler] for each publish. Multiple factories may be registered
+// for the same notification type; all run on [Publish].
+//
+//	relay.RegisterNotificationHandlerFactory(r, func() relay.NotificationHandler[CaseCreatedEvent] {
+//	    return &WebhookDispatcher{Client: http.DefaultClient}
+//	})
+func RegisterNotificationHandlerFactory[N Notification](r *RealRelay, factory func() NotificationHandler[N]) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var zero N
+	t := reflect.TypeOf(zero)
+	r.notifications[t] = append(r.notifications[t], func(ctx context.Context, raw any) error {
+		return factory().Handle(ctx, raw.(N))
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Relay interface implementation
 // ---------------------------------------------------------------------------
 

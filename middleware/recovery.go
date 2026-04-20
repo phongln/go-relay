@@ -3,15 +3,14 @@
 // Register behaviors on the relay in this order for correct operation:
 //
 //	r.AddPipeline(&middleware.RecoveryBehavior{Logger: logger})  // 1. outermost
-//	r.AddPipeline(&middleware.TracingBehavior{})                 // 2.
-//	r.AddPipeline(&middleware.LoggingBehavior{Logger: logger})   // 3.
-//	r.AddPipeline(&middleware.ValidationBehavior{})              // 4. innermost
+//	// add tracing behavior here (see github.com/phongln/go-relay/relayotel)
+//	r.AddPipeline(&middleware.LoggingBehavior{Logger: logger})   // 2.
+//	r.AddPipeline(&middleware.ValidationBehavior{})              // 3. innermost
 package middleware
 
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"runtime/debug"
 
 	"github.com/phongln/go-relay/relay"
@@ -23,8 +22,11 @@ import (
 //
 // Register this as the first (outermost) pipeline behavior so it wraps
 // everything else — including tracing and logging.
+//
+// Logger accepts any [relay.Logger] implementation. *slog.Logger satisfies
+// this interface directly.
 type RecoveryBehavior struct {
-	Logger *slog.Logger
+	Logger relay.Logger
 }
 
 // Handle implements [relay.PipelineBehavior].

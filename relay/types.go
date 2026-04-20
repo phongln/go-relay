@@ -185,6 +185,27 @@ type Transactional interface {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// RequestKind returns "command", "query", "notification", or "unknown"
+// for the given request value. Useful when writing custom [PipelineBehavior]
+// implementations that need to distinguish request types for logging,
+// metrics, or tracing.
+func RequestKind(r any) string {
+	switch r.(type) {
+	case Command:
+		return "command"
+	case Query:
+		return "query"
+	case Notification:
+		return "notification"
+	default:
+		return "unknown"
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Relay
 // ---------------------------------------------------------------------------
 

@@ -23,13 +23,24 @@ func (t *NoopTransactor) WithTransaction(ctx context.Context, fn relay.TxFunc) e
 }
 
 // New constructs and returns a fully configured relay.Relay.
+//
+// *slog.Logger satisfies relay.Logger directly — no adapter needed.
+// For OTel tracing, import github.com/phongln/go-relay/relayotel and add:
+//
+//	r.AddPipeline(&relayotel.TracingBehavior{})
+//
+// For trace/log correlation, set ContextAttrs:
+//
+//	r.AddPipeline(&middleware.LoggingBehavior{
+//	    Logger:       logger,
+//	    ContextAttrs: relayotel.TraceAttrs,
+//	})
 func New(logger *slog.Logger) relay.Relay {
 	r := relay.New()
 
 	r.WithTransactor(&NoopTransactor{})
 
 	r.AddPipeline(&middleware.RecoveryBehavior{Logger: logger})
-	r.AddPipeline(&middleware.TracingBehavior{})
 	r.AddPipeline(&middleware.LoggingBehavior{Logger: logger, SlowThreshold: 500 * time.Millisecond})
 	r.AddPipeline(&middleware.ValidationBehavior{})
 

@@ -3,34 +3,39 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
-
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/phongln/go-relay/relay"
 )
 
-// LoggingBehavior emits a structured slog entry for every command and query.
+// LoggingBehavior emits a structured log entry for every command and query.
 //
 // Log entry fields:
 //
 //	request_type — fully qualified Go type name
 //	request_kind — "command" or "query"
 //	duration_ms  — wall-clock execution time in milliseconds
-//	trace_id     — OTel trace ID when a span is active in ctx
-//	span_id      — OTel span ID when a span is active in ctx
 //	error        — error message on failure (only present on error)
 //
-// trace_id and span_id are populated automatically when registered
-// after TracingBehavior, enabling trace/log correlation in Datadog,
-// Grafana Loki, GCP Cloud Logging, etc.
+// ContextAttrs: when set, the function is called with the current context
+// and its return value is appended to every log entry. Use this for
+// trace/log correlation without coupling to a specific tracing library:
+//
+//	// with the relayotel sub-module:
+//	r.AddPipeline(&middleware.LoggingBehavior{
+//	    Logger:       slog.Default(),
+//	    ContextAttrs: relayotel.TraceAttrs,
+//	})
 //
 // SlowThreshold: when non-zero, emits a Warn log when a handler exceeds
 // this duration. Zero disables slow-handler warnings.
+//
+// Logger accepts any [relay.Logger] implementation. *slog.Logger satisfies
+// this interface directly.
 type LoggingBehavior struct {
-	Logger        *slog.Logger
+	Logger        relay.Logger
 	SlowThreshold time.Duration
+	ContextAttrs  func(ctx context.Context) []any
 }
 
 // Handle implements [relay.PipelineBehavior].
@@ -46,15 +51,12 @@ func (l *LoggingBehavior) Handle(
 
 	attrs := []any{
 		"request_type", fmt.Sprintf("%T", request),
-		"request_kind", requestKind(request),
+		"request_kind", relay.RequestKind(request),
 		"duration_ms", ms,
 	}
 
-	if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
-		attrs = append(attrs,
-			"trace_id", sc.TraceID().String(),
-			"span_id", sc.SpanID().String(),
-		)
+	if l.ContextAttrs != nil {
+		attrs = append(attrs, l.ContextAttrs(ctx)...)
 	}
 
 	if err != nil {

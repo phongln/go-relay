@@ -47,19 +47,3 @@ func (v *ValidationBehavior) Handle(
 	return next(ctx)
 }
 
-// ---------------------------------------------------------------------------
-// Shared internal helper
-// ---------------------------------------------------------------------------
-
-func requestKind(r any) string {
-	switch r.(type) {
-	case relay.Command:
-		return "command"
-	case relay.Query:
-		return "query"
-	case relay.Notification:
-		return "notification"
-	default:
-		return "unknown"
-	}
-}

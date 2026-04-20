@@ -1,4 +1,24 @@
-package middleware
+// Package relayotel provides OpenTelemetry integration for go-relay.
+//
+// This is an optional sub-module — import it only when you need OTel tracing.
+// The core relay and middleware packages have zero OTel dependency.
+//
+// # Tracing
+//
+// TracingBehavior creates an OTel span for every command and query:
+//
+//	r.AddPipeline(&relayotel.TracingBehavior{})
+//
+// # Log correlation
+//
+// TraceAttrs extracts trace_id and span_id from context for use with
+// middleware.LoggingBehavior:
+//
+//	r.AddPipeline(&middleware.LoggingBehavior{
+//	    Logger:       slog.Default(),
+//	    ContextAttrs: relayotel.TraceAttrs,
+//	})
+package relayotel
 
 import (
 	"context"
@@ -52,7 +72,7 @@ func (t *TracingBehavior) Handle(
 	request any,
 	next relay.RequestHandlerFunc,
 ) (any, error) {
-	kind := requestKind(request)
+	kind := relay.RequestKind(request)
 	reqType := fmt.Sprintf("%T", request)
 	spanName := "relay." + kind + " " + reqType
 

@@ -7,7 +7,9 @@
 
 **go-relay** is a production-grade CQRS mediator bus for Go.
 
-It implements the [CQRS](https://martinfowler.com/bliki/CQRS.html) and [Mediator](https://refactoring.guru/design-patterns/mediator) patterns with explicit separation between writes (commands) and reads (queries), automatic transaction support, OpenTelemetry tracing, structured logging, and a zero-friction test double.
+It implements the [CQRS](https://martinfowler.com/bliki/CQRS.html) and [Mediator](https://refactoring.guru/design-patterns/mediator) patterns with explicit separation between writes (commands) and reads (queries), automatic transaction support, pipeline behaviors, and a zero-friction test double.
+
+**Zero external dependencies.** OTel tracing is available as an optional sub-module.
 
 ---
 
@@ -30,7 +32,13 @@ It implements the [CQRS](https://martinfowler.com/bliki/CQRS.html) and [Mediator
 go get github.com/phongln/go-relay
 ```
 
-Requires **Go 1.21+**. No CGo. Only depends on OpenTelemetry.
+Requires **Go 1.21+**. No CGo. Zero external dependencies.
+
+For OpenTelemetry tracing (optional):
+
+```bash
+go get github.com/phongln/go-relay/relayotel
+```
 
 ---
 
@@ -39,7 +47,8 @@ Requires **Go 1.21+**. No CGo. Only depends on OpenTelemetry.
 | Package | Purpose |
 |---|---|
 | `relay` | Core — `Dispatch`, `Ask`, `Publish`, all interfaces |
-| `middleware` | Built-in pipeline behaviors: recovery, tracing, logging, validation |
+| `middleware` | Built-in pipeline behaviors: recovery, logging, validation |
+| `relayotel` | Optional — OTel tracing span + trace/log correlation helpers |
 | `mockrelay` | Test double with typed helpers; no testify required |
 
 ---
@@ -101,13 +110,15 @@ func NewRelay(logger *slog.Logger) relay.Relay {
 
     r.WithTransactor(&MongoTransactor{Client: mongoClient})
 
-    r.AddPipeline(&middleware.RecoveryBehavior{Logger: logger})  // 1. outermost
-    r.AddPipeline(&middleware.TracingBehavior{})                  // 2.
-    r.AddPipeline(&middleware.LoggingBehavior{                    // 3.
+    // *slog.Logger satisfies relay.Logger directly — no adapter needed.
+    r.AddPipeline(&middleware.RecoveryBehavior{Logger: logger})     // 1. outermost
+    r.AddPipeline(&relayotel.TracingBehavior{})                     // 2. optional OTel
+    r.AddPipeline(&middleware.LoggingBehavior{                      // 3.
         Logger:        logger,
         SlowThreshold: 500 * time.Millisecond,
+        ContextAttrs:  relayotel.TraceAttrs,                        // optional trace correlation
     })
-    r.AddPipeline(&middleware.ValidationBehavior{})               // 4. innermost
+    r.AddPipeline(&middleware.ValidationBehavior{})                  // 4. innermost
 
     relay.RegisterCommand(r, &CreateCaseHandler{Repo: caseRepo})
     relay.RegisterQuery(r, &GetDashboardHandler{ReadRepo: readRepo})
@@ -188,6 +199,57 @@ mockrelay.AssertNotCalled[CreateCaseCmd](t, mr)
 
 ---
 
+## Handler Factories
+
+For handlers with per-request state or scoped dependencies, use factory
+registration. A new handler instance is created for each dispatch:
+
+```go
+relay.RegisterCommandFactory(r, func() relay.CommandHandler[CreateCaseCmd, CaseResource] {
+    return &CreateCaseHandler{UoW: uowFactory.New()}
+})
+
+relay.RegisterQueryFactory(r, func() relay.QueryHandler[GetCaseQuery, CaseResource] {
+    return &GetCaseHandler{ReadRepo: readRepo.NewScoped()}
+})
+
+relay.RegisterNotificationHandlerFactory(r, func() relay.NotificationHandler[CaseCreatedEvent] {
+    return &WebhookDispatcher{Client: http.DefaultClient}
+})
+```
+
+For stateless handlers (the common case), prefer `RegisterCommand` /
+`RegisterQuery` / `RegisterNotificationHandler` instead.
+
+---
+
+## Logging — Bring Your Own Logger
+
+`relay.Logger` is a minimal interface:
+
+```go
+type Logger interface {
+    InfoContext(ctx context.Context, msg string, args ...any)
+    WarnContext(ctx context.Context, msg string, args ...any)
+    ErrorContext(ctx context.Context, msg string, args ...any)
+}
+```
+
+**`*slog.Logger` satisfies it directly** — no adapter needed.
+
+For other loggers, write a thin adapter:
+
+```go
+// zap adapter
+type ZapLogger struct{ L *zap.SugaredLogger }
+
+func (z *ZapLogger) InfoContext(_ context.Context, msg string, args ...any)  { z.L.Infow(msg, args...) }
+func (z *ZapLogger) WarnContext(_ context.Context, msg string, args ...any)  { z.L.Warnw(msg, args...) }
+func (z *ZapLogger) ErrorContext(_ context.Context, msg string, args ...any) { z.L.Errorw(msg, args...) }
+```
+
+---
+
 ## Transactions
 
 Add `WithTransaction()` to a command struct — the relay handles the rest automatically.
@@ -262,12 +324,12 @@ err := relay.Publish(ctx, r, CaseCreatedEvent{CaseID: result.ID, OrgID: result.O
 
 ## Pipeline Behaviors
 
-| Order | Behavior | Purpose |
-|---|---|---|
-| 1 (outermost) | `RecoveryBehavior` | Catches panics, logs stack trace, returns error |
-| 2 | `TracingBehavior` | OTel span per handler |
-| 3 | `LoggingBehavior` | Structured `slog` with trace/span ID correlation |
-| 4 (innermost) | `ValidationBehavior` | Calls `Validate()` before the handler |
+| Order | Behavior | Package | Purpose |
+|---|---|---|---|
+| 1 (outermost) | `RecoveryBehavior` | `middleware` | Catches panics, logs stack trace, returns error |
+| 2 | `TracingBehavior` | `relayotel` | OTel span per handler (optional) |
+| 3 | `LoggingBehavior` | `middleware` | Structured logging with optional trace correlation |
+| 4 (innermost) | `ValidationBehavior` | `middleware` | Calls `Validate()` before the handler |
 
 ### Custom Behavior
 
@@ -288,7 +350,17 @@ func (m *MetricsBehavior) Handle(ctx context.Context, req any, next relay.Reques
 
 ## Observability
 
-### Tracing
+### Tracing (optional — `relayotel` sub-module)
+
+```bash
+go get github.com/phongln/go-relay/relayotel
+```
+
+```go
+import "github.com/phongln/go-relay/relayotel"
+
+r.AddPipeline(&relayotel.TracingBehavior{})
+```
 
 ```
 Span:        relay.command CreateCaseCmd
@@ -309,6 +381,8 @@ Attributes:  relay.request_type = "commands.CreateCaseCmd"
   "span_id":      "00f067aa0ba902b7"
 }
 ```
+
+`trace_id` and `span_id` appear when `ContextAttrs: relayotel.TraceAttrs` is set.
 
 ---
 
@@ -354,10 +428,18 @@ make check      # fmt + lint-fix + vet + test (all-in-one)
 ## Run Tests
 
 ```bash
+# Core library
 go test -race ./...
+
+# OTel sub-module
+cd relayotel && go test -race ./...
 ```
 
 ---
+
+## Contributors
+
+- [@phongln](https://github.com/phongln)
 
 ## License
 
